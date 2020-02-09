@@ -15,6 +15,10 @@ where you can use your own logger, etc.
 * **Namespaced migrations**: If you have multiple databases to migrate in one app, you can keep the
 migrations completely separate, and run them separately too.
 
+## Usage
+
+See the `examples/` folder for a complete usage example.
+
 ## TODO
 
 * Unit tests
