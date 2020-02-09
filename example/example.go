@@ -38,24 +38,37 @@ func init() {
 	// Register migrations under the "example" namespace. Migration versions are just numbers,
 	// sorted so the lowest number is executed first.
 	migrate.Register("example", 1, func(ctx context.Context, tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `
+		createExample := `
 			CREATE TABLE example (
 			  id SERIAL NOT NULL,
 			  
 			  PRIMARY KEY (id)
 			)
-		`)
+		`
 
-		return err
+		return execQueries(ctx, tx, createExample)
 	})
 
 	migrate.Register("example", 2, func(ctx context.Context, tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `
-			ALTER TABLE example ADD COLUMN created_at timestamp NOT NULL DEFAULT current_timestamp
-		`)
+		alterExample := `
+			ALTER TABLE example 
+			ADD COLUMN created_at timestamp NOT NULL DEFAULT current_timestamp
+		`
 
-		return err
+		return execQueries(ctx, tx, alterExample)
 	})
+}
+
+// execQueries ...
+func execQueries(ctx context.Context, tx *sql.Tx, queries ...string) error {
+	for _, query := range queries {
+		_, err := tx.ExecContext(ctx, query)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // EventHandler ...
@@ -63,7 +76,7 @@ type EventHandler struct{}
 
 // BeforeVersionsMigrate ...
 func (e EventHandler) BeforeVersionsMigrate(versions []int) {
-	log.Printf("Found %d versions to migrate", len(versions))
+	log.Printf("Found %d new versions to migrate", len(versions))
 }
 
 // BeforeVersionMigrate ...
