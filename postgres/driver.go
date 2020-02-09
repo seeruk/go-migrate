@@ -57,7 +57,7 @@ func (d *Driver) Commit() error {
 
 // Rollback ...
 func (d *Driver) Rollback() error {
-	if d.tx != nil {
+	if d.tx == nil {
 		return migrate.ErrTransactionNotStarted
 	}
 
