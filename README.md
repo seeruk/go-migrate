@@ -2,27 +2,15 @@
 
 A Go library for handling database migrations.
 
-## Notes
+## Features
 
-* Migrations must be code, so you don't have to worry about dragging `.sql` files around when 
-you're doing things like building Docker images. ✅
-    * Code should be able to be generated - ideally this library should provide the template or a 
-    function for generating migration code.
-* Migrations must have a version that is sortable, but not be consecutive, otherwise working with
-migrations in a team setting is more complex. ✅
-    * Current unix timestamp sounds ideal?
-* Migrations must be configurable. ✅
-    * Table name (and schema, if relevant)
-    * The rest would come from the connection passed in
-* Migrations must create the migration versions table automatically if it's not present. ✅
-* Migrations should be run in a transaction to achieve locking. ✅
-    * This could be configurable. Maybe you want to run a migration in a job. Must Tx initially.
-* Migrations should receive a `*sql.Tx`, and just be able to do what they want with it. ✅
-* Migrations should only allow you to migrate up, not down. ✅
-* Migrations could be registered by anonymously importing a package in consuming application. ✅
-    * i.e. `_ "github.com/seeruk/inbox/migrations"`
-* Migrations could also be registered manually. ✅
-    * This would allow curried migrations, if a migration needs some other service.
-* Migrations could be namespaced. ✅
-    * Sometimes an application may interact with different databases, possibly even in different
-    database servers. We'd need to track versions separately for each.
+* **Safe to run on application startup**: The migration versions table is locked, preventing 
+multiple copies of the same migrations from executing at the same time.
+* **Migrations are code**: Meaning you don't have to worry about how to package up `.sql` files, 
+etc. into your Go binary, or transporting the `.sql` files with your application.
+* **Simple versioning**: Versions are just numbers - easy to sort (timestamps make good versions).
+* **Configurable versions table**: Migration drivers have relevant configuration exposed.
+* **Designed to be integrated in to your code**: Output is handled by implementing an `EventHandler`
+where you can use your own logger, etc.
+* **Namespaced migrations**: If you have multiple databases to migrate in one app, you can keep the
+migrations completely separate, and run them separately too.
