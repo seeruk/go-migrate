@@ -11,17 +11,19 @@ import (
 
 // Driver ...
 type Driver struct {
-	conn  *sql.DB
-	tx    *sql.Tx
-	table string
+	conn   *sql.DB
+	tx     *sql.Tx
+	schema string
+	table  string
 }
 
 // NewDriver returns a new Driver instance.
 // TODO: Config...
-func NewDriver(conn *sql.DB, table string) *Driver {
+func NewDriver(conn *sql.DB, schema, table string) *Driver {
 	return &Driver{
-		conn:  conn,
-		table: table,
+		conn:   conn,
+		schema: schema,
+		table:  table,
 	}
 }
 
@@ -71,7 +73,7 @@ func (d *Driver) Rollback() error {
 
 // Lock ...
 func (d *Driver) Lock(ctx context.Context) error {
-	_, err := d.tx.ExecContext(ctx, fmt.Sprintf("LOCK TABLE %s IN ACCESS EXCLUSIVE MODE", d.table))
+	_, err := d.tx.ExecContext(ctx, fmt.Sprintf("LOCK TABLE %s.%s IN ACCESS EXCLUSIVE MODE", d.schema, d.table))
 	if err != nil {
 		return fmt.Errorf("failed to lock versions table: %w", err)
 	}
@@ -84,13 +86,14 @@ func (d *Driver) CreateVersionsTable(ctx context.Context) error {
 	// We use IF NOT EXISTS here because we're not doing this part in a transaction or with any sort
 	// of lock. If the table already exists, then we can just skip creating it.
 	query := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s (
+		CREATE SCHEMA IF NOT EXISTS %[1]s;
+		CREATE TABLE IF NOT EXISTS %[1]s.%[2]s (
 			version int NOT NULL,
 			migrated_at timestamp NOT NULL DEFAULT current_timestamp,
 
 			PRIMARY KEY (version)
 		);
-	`, d.table)
+	`, d.schema, d.table)
 
 	_, err := d.conn.ExecContext(ctx, query)
 	if err != nil {
@@ -102,7 +105,7 @@ func (d *Driver) CreateVersionsTable(ctx context.Context) error {
 
 // InsertVersion ...
 func (d *Driver) InsertVersion(ctx context.Context, version int) error {
-	query := fmt.Sprintf(`INSERT INTO %s (version) VALUES ($1)`, d.table)
+	query := fmt.Sprintf(`INSERT INTO %s.%s (version) VALUES ($1)`, d.schema, d.table)
 
 	res, err := d.tx.ExecContext(ctx, query, version)
 	if err != nil {
@@ -123,7 +126,7 @@ func (d *Driver) InsertVersion(ctx context.Context, version int) error {
 
 // Versions ...
 func (d *Driver) Versions(ctx context.Context) ([]int, error) {
-	query := fmt.Sprintf(`SELECT version FROM %s`, d.table)
+	query := fmt.Sprintf(`SELECT version FROM %s.%s`, d.schema, d.table)
 
 	rows, err := d.tx.QueryContext(ctx, query)
 	if err != nil {
@@ -151,7 +154,7 @@ func (d *Driver) Versions(ctx context.Context) ([]int, error) {
 func (d *Driver) VersionTableExists(ctx context.Context) (bool, error) {
 	var name sql.NullString
 
-	query := fmt.Sprintf(`SELECT to_regclass('%s')`, d.table)
+	query := fmt.Sprintf(`SELECT to_regclass('%s.%s')`, d.schema, d.table)
 
 	err := d.conn.QueryRowContext(ctx, query).Scan(&name)
 	if err != nil {
