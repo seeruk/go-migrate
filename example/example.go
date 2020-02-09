@@ -28,14 +28,16 @@ func main() {
 
 	driver := postgres.NewDriver(conn, "migration_versions")
 
-	err = migrate.Execute(ctx, driver, EventHandler{}, "")
+	err = migrate.Execute(ctx, driver, EventHandler{}, "example")
 	if err != nil {
 		log.Fatalf("failed to execute migrations: %v", err)
 	}
 }
 
 func init() {
-	migrate.Register("", 1, func(ctx context.Context, tx *sql.Tx) error {
+	// Register migrations under the "example" namespace. Migration versions are just numbers,
+	// sorted so the lowest number is executed first.
+	migrate.Register("example", 1, func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			CREATE TABLE example (
 			  id SERIAL NOT NULL,
@@ -47,7 +49,7 @@ func init() {
 		return err
 	})
 
-	migrate.Register("", 2, func(ctx context.Context, tx *sql.Tx) error {
+	migrate.Register("example", 2, func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			ALTER TABLE example ADD COLUMN created_at timestamp NOT NULL DEFAULT current_timestamp
 		`)

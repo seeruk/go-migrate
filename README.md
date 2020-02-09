@@ -14,3 +14,9 @@ etc. into your Go binary, or transporting the `.sql` files with your application
 where you can use your own logger, etc.
 * **Namespaced migrations**: If you have multiple databases to migrate in one app, you can keep the
 migrations completely separate, and run them separately too.
+
+## TODO
+
+* Unit tests
+* Documentation
+    * Godoc comments
