@@ -1,29 +1,30 @@
-package postgres
+package mysql
 
 import (
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
+	"time"
 
 	"github.com/seeruk/go-migrate"
 )
 
 // Driver ...
 type Driver struct {
-	conn   *sql.DB
-	tx     *sql.Tx
-	schema string
-	table  string
+	conn     *sql.DB
+	tx       *sql.Tx
+	database string
+	table    string
 }
 
 // NewDriver returns a new Driver instance.
-// TODO: Config...
-func NewDriver(conn *sql.DB, schema, table string) *Driver {
+func NewDriver(conn *sql.DB, database, table string) *Driver {
 	return &Driver{
-		conn:   conn,
-		schema: schema,
-		table:  table,
+		conn:     conn,
+		database: database,
+		table:    table,
 	}
 }
 
@@ -33,6 +34,7 @@ func (d *Driver) Begin(ctx context.Context) (*sql.Tx, error) {
 		return nil, migrate.ErrTransactionAlreadyStarted
 	}
 
+	// TODO: Is this the same for every driver?.. Maybe we could move this out of the driver.
 	tx, err := d.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
@@ -48,6 +50,8 @@ func (d *Driver) Commit() error {
 		return migrate.ErrTransactionNotStarted
 	}
 
+	defer d.Unlock()
+
 	err := d.tx.Commit()
 	if err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
@@ -62,6 +66,8 @@ func (d *Driver) Rollback() error {
 		return migrate.ErrTransactionNotStarted
 	}
 
+	defer d.Unlock()
+
 	err := d.tx.Rollback()
 	if err != nil {
 		return fmt.Errorf("failed to rollback transaction: %w", err)
@@ -72,27 +78,42 @@ func (d *Driver) Rollback() error {
 
 // Lock ...
 func (d *Driver) Lock(ctx context.Context) error {
-	_, err := d.tx.ExecContext(ctx, fmt.Sprintf("LOCK TABLE %s.%s IN ACCESS EXCLUSIVE MODE", d.schema, d.table))
+	lock := fmt.Sprintf("migrate_%s_%s", d.database, d.table)
+
+	// TODO: Ideally there would be a timeout, and we'd keep retrying the acquire.
+	_, err := d.tx.ExecContext(ctx, fmt.Sprintf(`GET_LOCK("%s", -1)`, lock))
 	if err != nil {
-		return fmt.Errorf("failed to lock versions table: %w", err)
+		return fmt.Errorf("failed to acquire named lock: %s: %w", lock, err)
 	}
 
 	return nil
 }
 
+// Unlock must be explicitly implemented for MySQL.
+func (d *Driver) Unlock() {
+	ctx, cfn := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cfn()
+
+	lock := fmt.Sprintf("migrate_%s_%s", d.database, d.table)
+
+	_, err := d.tx.ExecContext(ctx, fmt.Sprintf(`RELEASE_LOCK("%s")`, lock))
+	if err != nil {
+		log.Println("migrate/mysql: failed to explicitly unlock")
+	}
+}
+
 // CreateVersionsTable ...
 func (d *Driver) CreateVersionsTable(ctx context.Context) error {
-	// We use IF NOT EXISTS here because we're not doing this part in a transaction or with any sort
-	// of lock. If the table already exists, then we can just skip creating it.
+	// TODO: Very opinionated...
 	query := fmt.Sprintf(`
-		CREATE SCHEMA IF NOT EXISTS %[1]s;
+		CREATE DATABASE IF NOT EXISTS %[1]s DEFAULT CHARACTER SET utf8mb4;
 		CREATE TABLE IF NOT EXISTS %[1]s.%[2]s (
 			version int NOT NULL,
-			migrated_at timestamp NOT NULL DEFAULT current_timestamp,
+			migrated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
 			PRIMARY KEY (version)
-		);
-	`, d.schema, d.table)
+		) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
+	`)
 
 	_, err := d.conn.ExecContext(ctx, query)
 	if err != nil {
@@ -104,7 +125,7 @@ func (d *Driver) CreateVersionsTable(ctx context.Context) error {
 
 // InsertVersion ...
 func (d *Driver) InsertVersion(ctx context.Context, version int) error {
-	query := fmt.Sprintf(`INSERT INTO %s.%s (version) VALUES ($1)`, d.schema, d.table)
+	query := fmt.Sprintf(`INSERT INTO %s.%s (version) VALUES (?)`, d.database, d.table)
 
 	res, err := d.tx.ExecContext(ctx, query, version)
 	if err != nil {
@@ -125,7 +146,7 @@ func (d *Driver) InsertVersion(ctx context.Context, version int) error {
 
 // Versions ...
 func (d *Driver) Versions(ctx context.Context) ([]int, error) {
-	query := fmt.Sprintf(`SELECT version FROM %s.%s`, d.schema, d.table)
+	query := fmt.Sprintf(`SELECT version FROM %s.%s`, d.database, d.table)
 
 	rows, err := d.tx.QueryContext(ctx, query)
 	if err != nil {
@@ -151,14 +172,19 @@ func (d *Driver) Versions(ctx context.Context) ([]int, error) {
 
 // VersionTableExists ...
 func (d *Driver) VersionTableExists(ctx context.Context) (bool, error) {
-	var name sql.NullString
+	var count int
 
-	query := fmt.Sprintf(`SELECT to_regclass('%s.%s')`, d.schema, d.table)
+	query := `
+		SELECT COUNT(1) 
+		FROM information_schema.tables 
+		WHERE table_schema = ? 
+		AND table_name = ?
+	`
 
-	err := d.conn.QueryRowContext(ctx, query).Scan(&name)
+	err := d.conn.QueryRowContext(ctx, query, d.database, d.table).Scan(&count)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("failed to check if version table exists: %w", err)
 	}
 
-	return name.Valid, nil
+	return count == 1, nil
 }
