@@ -81,7 +81,7 @@ func (d *Driver) Lock(ctx context.Context) error {
 	lock := fmt.Sprintf("migrate_%s_%s", d.database, d.table)
 
 	// TODO: Ideally there would be a timeout, and we'd keep retrying the acquire.
-	_, err := d.tx.ExecContext(ctx, fmt.Sprintf(`GET_LOCK("%s", -1)`, lock))
+	_, err := d.tx.ExecContext(ctx, fmt.Sprintf(`SELECT GET_LOCK("%s", -1)`, lock))
 	if err != nil {
 		return fmt.Errorf("failed to acquire named lock: %s: %w", lock, err)
 	}
@@ -96,26 +96,30 @@ func (d *Driver) Unlock() {
 
 	lock := fmt.Sprintf("migrate_%s_%s", d.database, d.table)
 
-	_, err := d.tx.ExecContext(ctx, fmt.Sprintf(`RELEASE_LOCK("%s")`, lock))
+	_, err := d.conn.ExecContext(ctx, fmt.Sprintf(`SELECT RELEASE_LOCK("%s")`, lock))
 	if err != nil {
-		log.Println("migrate/mysql: failed to explicitly unlock")
+		log.Println("migrate/mysql: failed to explicitly unlock: %v", err)
 	}
 }
 
 // CreateVersionsTable ...
 func (d *Driver) CreateVersionsTable(ctx context.Context) error {
-	// TODO: Very opinionated...
-	query := fmt.Sprintf(`
-		CREATE DATABASE IF NOT EXISTS %[1]s DEFAULT CHARACTER SET utf8mb4;
-		CREATE TABLE IF NOT EXISTS %[1]s.%[2]s (
+	dbq := fmt.Sprintf(`CREATE DATABASE IF NOT EXISTS %s DEFAULT CHARACTER SET utf8mb4`, d.database)
+	tbq := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s (
 			version int NOT NULL,
 			migrated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
 			PRIMARY KEY (version)
-		) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
+		) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4
 	`, d.database, d.table)
 
-	_, err := d.conn.ExecContext(ctx, query)
+	_, err := d.conn.ExecContext(ctx, dbq)
+	if err != nil {
+		return fmt.Errorf("failed to create versions database: %w", err)
+	}
+
+	_, err = d.conn.ExecContext(ctx, tbq)
 	if err != nil {
 		return fmt.Errorf("failed to create versions table: %w", err)
 	}
