@@ -113,7 +113,7 @@ func (d *Driver) CreateVersionsTable(ctx context.Context) error {
 
 			PRIMARY KEY (version)
 		) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
-	`)
+	`, d.database, d.table)
 
 	_, err := d.conn.ExecContext(ctx, query)
 	if err != nil {
