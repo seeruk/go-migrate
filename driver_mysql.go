@@ -1,4 +1,4 @@
-package mysql
+package migrate
 
 import (
 	"context"
@@ -7,21 +7,19 @@ import (
 	"fmt"
 	"log"
 	"time"
-
-	"github.com/seeruk/go-migrate"
 )
 
-// Driver ...
-type Driver struct {
+// MySQLDriver ...
+type MySQLDriver struct {
 	conn     *sql.DB
 	tx       *sql.Tx
 	database string
 	table    string
 }
 
-// NewDriver returns a new Driver instance.
-func NewDriver(conn *sql.DB, database, table string) *Driver {
-	return &Driver{
+// NewMySQLDriver returns a new MySQLDriver instance.
+func NewMySQLDriver(conn *sql.DB, database, table string) *MySQLDriver {
+	return &MySQLDriver{
 		conn:     conn,
 		database: database,
 		table:    table,
@@ -29,25 +27,25 @@ func NewDriver(conn *sql.DB, database, table string) *Driver {
 }
 
 // Begin ...
-func (d *Driver) Begin(ctx context.Context) (*sql.Tx, error) {
+func (d *MySQLDriver) Begin(ctx context.Context) error {
 	if d.tx != nil {
-		return nil, migrate.ErrTransactionAlreadyStarted
+		return ErrTransactionAlreadyStarted
 	}
 
 	// TODO: Is this the same for every driver?.. Maybe we could move this out of the driver.
 	tx, err := d.conn.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", err)
+		return fmt.Errorf("failed to start transaction: %w", err)
 	}
 
 	d.tx = tx
-	return tx, nil
+	return nil
 }
 
 // Commit ...
-func (d *Driver) Commit() error {
+func (d *MySQLDriver) Commit(_ context.Context) error {
 	if d.tx == nil {
-		return migrate.ErrTransactionNotStarted
+		return ErrTransactionNotStarted
 	}
 
 	defer d.Unlock()
@@ -61,9 +59,9 @@ func (d *Driver) Commit() error {
 }
 
 // Rollback ...
-func (d *Driver) Rollback() error {
+func (d *MySQLDriver) Rollback(_ context.Context) error {
 	if d.tx == nil {
-		return migrate.ErrTransactionNotStarted
+		return ErrTransactionNotStarted
 	}
 
 	defer d.Unlock()
@@ -76,8 +74,22 @@ func (d *Driver) Rollback() error {
 	return nil
 }
 
+// Exec ...
+func (d *MySQLDriver) Exec(ctx context.Context, command string) error {
+	if d.tx == nil {
+		return ErrTransactionNotStarted
+	}
+
+	_, err := d.tx.ExecContext(ctx, command)
+	if err != nil {
+		return fmt.Errorf("failed to execute command: %w", err)
+	}
+
+	return nil
+}
+
 // Lock ...
-func (d *Driver) Lock(ctx context.Context) error {
+func (d *MySQLDriver) Lock(ctx context.Context) error {
 	lock := fmt.Sprintf("migrate_%s_%s", d.database, d.table)
 
 	// TODO: Ideally there would be a timeout, and we'd keep retrying the acquire.
@@ -90,7 +102,7 @@ func (d *Driver) Lock(ctx context.Context) error {
 }
 
 // Unlock must be explicitly implemented for MySQL.
-func (d *Driver) Unlock() {
+func (d *MySQLDriver) Unlock() {
 	ctx, cfn := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cfn()
 
@@ -103,7 +115,7 @@ func (d *Driver) Unlock() {
 }
 
 // CreateVersionsTable ...
-func (d *Driver) CreateVersionsTable(ctx context.Context) error {
+func (d *MySQLDriver) CreateVersionsTable(ctx context.Context) error {
 	dbq := fmt.Sprintf(`CREATE DATABASE IF NOT EXISTS %s DEFAULT CHARACTER SET utf8mb4`, d.database)
 	tbq := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s.%s (
@@ -128,7 +140,7 @@ func (d *Driver) CreateVersionsTable(ctx context.Context) error {
 }
 
 // InsertVersion ...
-func (d *Driver) InsertVersion(ctx context.Context, version int) error {
+func (d *MySQLDriver) InsertVersion(ctx context.Context, version int) error {
 	query := fmt.Sprintf(`INSERT INTO %s.%s (version) VALUES (?)`, d.database, d.table)
 
 	res, err := d.tx.ExecContext(ctx, query, version)
@@ -149,7 +161,7 @@ func (d *Driver) InsertVersion(ctx context.Context, version int) error {
 }
 
 // Versions ...
-func (d *Driver) Versions(ctx context.Context) ([]int, error) {
+func (d *MySQLDriver) Versions(ctx context.Context) ([]int, error) {
 	query := fmt.Sprintf(`SELECT version FROM %s.%s`, d.database, d.table)
 
 	rows, err := d.tx.QueryContext(ctx, query)
@@ -175,7 +187,7 @@ func (d *Driver) Versions(ctx context.Context) ([]int, error) {
 }
 
 // VersionTableExists ...
-func (d *Driver) VersionTableExists(ctx context.Context) (bool, error) {
+func (d *MySQLDriver) VersionTableExists(ctx context.Context) (bool, error) {
 	var count int
 
 	query := `

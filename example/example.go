@@ -2,33 +2,22 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"log"
 	"time"
 
+	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/seeruk/go-migrate"
-	"github.com/seeruk/go-migrate/postgres"
-
-	_ "github.com/lib/pq"
 )
 
 func main() {
-	conn, err := sql.Open("postgres", "user=postgres password=postgres sslmode=disable")
+	conn, err := pgxpool.Connect(context.TODO(), "user=postgres password=postgres sslmode=disable")
 	if err != nil {
 		log.Fatalf("failed to open DB connection: %v", err)
 	}
 
-	err = conn.Ping()
-	if err != nil {
-		log.Fatalf("failed to ping DB: %v", err)
-	}
+	driver := migrate.NewPostgresDriver(conn, "example", "migration_versions")
 
-	ctx, cfn := context.WithTimeout(context.Background(), time.Hour)
-	defer cfn()
-
-	driver := postgres.NewDriver(conn, "migration_versions")
-
-	err = migrate.Execute(ctx, driver, EventHandler{}, "example")
+	err = migrate.Execute(driver, NewEventHandler(), "example", time.Minute)
 	if err != nil {
 		log.Fatalf("failed to execute migrations: %v", err)
 	}
@@ -36,43 +25,31 @@ func main() {
 
 func init() {
 	// Register migrations under the "example" namespace. Migration versions are just numbers,
-	// sorted so the lowest number is executed first.
-	migrate.Register("example", 1, func(ctx context.Context, tx *sql.Tx) error {
-		createExample := `
-			CREATE TABLE example (
-			  id SERIAL NOT NULL,
-			  
-			  PRIMARY KEY (id)
-			)
-		`
+	// sorted so the lowest number is executed first. Missing migrations are applied, even if the
+	// most recently applied migration has a higher version (e.g. to support working in branches).
+	migrate.Register("example", migrate.NewMigration(1, `
+		CREATE TABLE example (
+		  id SERIAL NOT NULL,
+		  
+		  PRIMARY KEY (id)
+		)
+	`))
 
-		return execQueries(ctx, tx, createExample)
-	})
-
-	migrate.Register("example", 2, func(ctx context.Context, tx *sql.Tx) error {
-		alterExample := `
-			ALTER TABLE example 
-			ADD COLUMN created_at timestamp NOT NULL DEFAULT current_timestamp
-		`
-
-		return execQueries(ctx, tx, alterExample)
-	})
-}
-
-// execQueries ...
-func execQueries(ctx context.Context, tx *sql.Tx, queries ...string) error {
-	for _, query := range queries {
-		_, err := tx.ExecContext(ctx, query)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
+	// Migrations are code there's no need to package up migrations into your binary using a third-
+	// party tool and an extra build step.
+	migrate.Register("example", migrate.NewMigration(2, `
+		ALTER TABLE example 
+		ADD COLUMN created_at timestamp NOT NULL DEFAULT current_timestamp
+	`))
 }
 
 // EventHandler ...
 type EventHandler struct{}
+
+// NewEventHandler ...
+func NewEventHandler() EventHandler {
+	return EventHandler{}
+}
 
 // BeforeVersionsMigrate ...
 func (e EventHandler) BeforeVersionsMigrate(versions []int) {
@@ -107,6 +84,11 @@ func (e EventHandler) OnVersionTableNotExists() {
 // OnVersionTableCreated ...
 func (e EventHandler) OnVersionTableCreated() {
 	log.Println("Created versions table")
+}
+
+// OnExecuteError ...
+func (e EventHandler) OnExecuteError(err error) {
+	log.Printf("Failed to migrate: %v", err)
 }
 
 // OnRollbackError ...

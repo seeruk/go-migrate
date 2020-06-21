@@ -10,6 +10,7 @@ type EventHandler interface {
 	OnVersionSkipped(version int)
 	OnVersionTableNotExists()
 	OnVersionTableCreated()
+	OnExecuteError(err error)
 	OnRollbackError(err error)
 }
 
@@ -36,6 +37,9 @@ func (n NoopEventHandler) OnVersionTableNotExists() {}
 
 // OnVersionTableCreated is a no-op OnVersionTableCreated method.
 func (n NoopEventHandler) OnVersionTableCreated() {}
+
+// OnExecuteError is a no-op OnExecuteError method.
+func (n NoopEventHandler) OnExecuteError(err error) {}
 
 // OnRollbackError is a no-op OnRollbackError method.
 func (n NoopEventHandler) OnRollbackError(err error) {}

@@ -2,10 +2,10 @@ package migrate
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 )
 
 var (
@@ -18,36 +18,46 @@ var (
 // namespacedMigrations contains all registered migrations, by namespace.
 var namespacedMigrations = make(NamespacedMigrations)
 
+// Migration ...
+type Migration struct {
+	Version  int
+	Commands []string
+}
+
+// NewMigration returns a new Migration value.
+func NewMigration(version int, commands ...string) Migration {
+	return Migration{
+		Version:  version,
+		Commands: commands,
+	}
+}
+
 // Migrations ...
 type Migrations map[int]Migration
 
 // NamespacedMigrations ...
 type NamespacedMigrations map[string]Migrations
 
-// Migration ...
-type Migration func(ctx context.Context, tx *sql.Tx) error
-
 // Register ...
 // You can call this manually, or you can take advantage of `init` functions and just import a whole
 // package of migrations at once. Sub-packages could easily be the namespace, e.g. migrations/users.
-func Register(namespace string, version int, migration Migration) {
+func Register(namespace string, migration Migration) {
 	if _, ok := namespacedMigrations[namespace]; !ok {
 		namespacedMigrations[namespace] = make(Migrations)
 	}
 
-	namespacedMigrations[namespace][version] = migration
+	namespacedMigrations[namespace][migration.Version] = migration
 }
 
 // Execute ...
-// TODO: How should any sort of output be handled? Maybe some kind of configurable hooks, callbacks
-// for when some events happen so you can use your own logger? Maybe you give a type that implements
-// an interface that has all of the events as methods, and you choose how you want to output in
-// there?
-func Execute(ctx context.Context, driver Driver, eventHandler EventHandler, namespace string) (err error) {
+func Execute(driver Driver, events EventHandler, namespace string, timeout time.Duration) (err error) {
+	ctx, cfn := context.WithTimeout(context.Background(), timeout)
+	defer cfn()
+
 	// Check if we can possibly have any work to do. If we don't, bail.
 	migrationsByVersion, ok := namespacedMigrations[namespace]
 	if !ok {
-		return errors.New("no migrations found")
+		return nil
 	}
 
 	defer func() {
@@ -55,10 +65,12 @@ func Execute(ctx context.Context, driver Driver, eventHandler EventHandler, name
 		// some work. If we haven't started doing work, then we won't rollback. This just means we
 		// don't have to handle rolling back all over the place.
 		if err != nil {
-			err := driver.Rollback()
-			if err != nil && err != ErrTransactionNotStarted {
-				eventHandler.OnRollbackError(err)
+			rerr := driver.Rollback(ctx)
+			if rerr != nil && rerr != ErrTransactionNotStarted {
+				events.OnRollbackError(rerr)
 			}
+
+			events.OnExecuteError(err)
 		}
 	}()
 
@@ -69,19 +81,17 @@ func Execute(ctx context.Context, driver Driver, eventHandler EventHandler, name
 	}
 
 	if !exists {
-		eventHandler.OnVersionTableNotExists()
+		events.OnVersionTableNotExists()
 
 		err := driver.CreateVersionsTable(ctx)
 		if err != nil {
 			return err
 		}
 
-		eventHandler.OnVersionTableCreated()
+		events.OnVersionTableCreated()
 	}
 
-	// TODO: Configurable transaction.
-	// TODO: Configurable transaction options.
-	tx, err := driver.Begin(ctx)
+	err = driver.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -111,21 +121,23 @@ func Execute(ctx context.Context, driver Driver, eventHandler EventHandler, name
 
 	sort.Ints(versions)
 
-	eventHandler.BeforeVersionsMigrate(versions)
+	events.BeforeVersionsMigrate(versions)
 
 	for _, version := range versions {
 		migration, ok := migrationsByVersion[version]
 		if !ok {
 			// This migration probably already existed, and was removed.
-			eventHandler.OnVersionSkipped(version)
+			events.OnVersionSkipped(version)
 			continue
 		}
 
-		eventHandler.BeforeVersionMigrate(version)
+		events.BeforeVersionMigrate(version)
 
-		err = migration(ctx, tx)
-		if err != nil {
-			return fmt.Errorf("failed to execute migration: %w", err)
+		for i, command := range migration.Commands {
+			err = driver.Exec(ctx, command)
+			if err != nil {
+				return fmt.Errorf("failed to execute migration (command %d): %w", i, err)
+			}
 		}
 
 		err = driver.InsertVersion(ctx, version)
@@ -133,12 +145,12 @@ func Execute(ctx context.Context, driver Driver, eventHandler EventHandler, name
 			return fmt.Errorf("failed to insert version: %w", err)
 		}
 
-		eventHandler.AfterVersionMigrate(version)
+		events.AfterVersionMigrate(version)
 	}
 
-	eventHandler.AfterVersionsMigrate(versions)
+	events.AfterVersionsMigrate(versions)
 
-	err = driver.Commit()
+	err = driver.Commit(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}

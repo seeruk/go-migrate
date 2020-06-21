@@ -1,4 +1,4 @@
-package postgres
+package migrate
 
 import (
 	"context"
@@ -6,21 +6,22 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/seeruk/go-migrate"
+	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/pgxpool"
 )
 
-// Driver ...
-type Driver struct {
-	conn   *sql.DB
-	tx     *sql.Tx
+// PostgresDriver ...
+type PostgresDriver struct {
+	conn   *pgxpool.Pool
+	tx     pgx.Tx
 	schema string
 	table  string
 }
 
-// NewDriver returns a new Driver instance.
+// NewPostgresDriver returns a new PostgresDriver instance.
 // TODO: Config...
-func NewDriver(conn *sql.DB, schema, table string) *Driver {
-	return &Driver{
+func NewPostgresDriver(conn *pgxpool.Pool, schema, table string) *PostgresDriver {
+	return &PostgresDriver{
 		conn:   conn,
 		schema: schema,
 		table:  table,
@@ -28,27 +29,27 @@ func NewDriver(conn *sql.DB, schema, table string) *Driver {
 }
 
 // Begin ...
-func (d *Driver) Begin(ctx context.Context) (*sql.Tx, error) {
+func (d *PostgresDriver) Begin(ctx context.Context) error {
 	if d.tx != nil {
-		return nil, migrate.ErrTransactionAlreadyStarted
+		return ErrTransactionAlreadyStarted
 	}
 
-	tx, err := d.conn.BeginTx(ctx, nil)
+	tx, err := d.conn.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", err)
+		return fmt.Errorf("failed to start transaction: %w", err)
 	}
 
 	d.tx = tx
-	return tx, nil
+	return nil
 }
 
 // Commit ...
-func (d *Driver) Commit() error {
+func (d *PostgresDriver) Commit(ctx context.Context) error {
 	if d.tx == nil {
-		return migrate.ErrTransactionNotStarted
+		return ErrTransactionNotStarted
 	}
 
-	err := d.tx.Commit()
+	err := d.tx.Commit(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
@@ -57,12 +58,12 @@ func (d *Driver) Commit() error {
 }
 
 // Rollback ...
-func (d *Driver) Rollback() error {
+func (d *PostgresDriver) Rollback(ctx context.Context) error {
 	if d.tx == nil {
-		return migrate.ErrTransactionNotStarted
+		return ErrTransactionNotStarted
 	}
 
-	err := d.tx.Rollback()
+	err := d.tx.Rollback(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to rollback transaction: %w", err)
 	}
@@ -70,9 +71,23 @@ func (d *Driver) Rollback() error {
 	return nil
 }
 
+// Exec ...
+func (d *PostgresDriver) Exec(ctx context.Context, command string) error {
+	if d.tx == nil {
+		return ErrTransactionNotStarted
+	}
+
+	_, err := d.tx.Exec(ctx, command)
+	if err != nil {
+		return fmt.Errorf("failed to execute command: %w", err)
+	}
+
+	return nil
+}
+
 // Lock ...
-func (d *Driver) Lock(ctx context.Context) error {
-	_, err := d.tx.ExecContext(ctx, fmt.Sprintf("LOCK TABLE %s.%s IN ACCESS EXCLUSIVE MODE", d.schema, d.table))
+func (d *PostgresDriver) Lock(ctx context.Context) error {
+	_, err := d.tx.Exec(ctx, fmt.Sprintf("LOCK TABLE %s.%s IN ACCESS EXCLUSIVE MODE", d.schema, d.table))
 	if err != nil {
 		return fmt.Errorf("failed to lock versions table: %w", err)
 	}
@@ -81,7 +96,7 @@ func (d *Driver) Lock(ctx context.Context) error {
 }
 
 // CreateVersionsTable ...
-func (d *Driver) CreateVersionsTable(ctx context.Context) error {
+func (d *PostgresDriver) CreateVersionsTable(ctx context.Context) error {
 	// We use IF NOT EXISTS here because we're not doing this part in a transaction or with any sort
 	// of lock. If the table already exists, then we can just skip creating it.
 	query := fmt.Sprintf(`
@@ -94,7 +109,7 @@ func (d *Driver) CreateVersionsTable(ctx context.Context) error {
 		);
 	`, d.schema, d.table)
 
-	_, err := d.conn.ExecContext(ctx, query)
+	_, err := d.conn.Exec(ctx, query)
 	if err != nil {
 		return fmt.Errorf("failed to create versions table: %w", err)
 	}
@@ -103,20 +118,15 @@ func (d *Driver) CreateVersionsTable(ctx context.Context) error {
 }
 
 // InsertVersion ...
-func (d *Driver) InsertVersion(ctx context.Context, version int) error {
+func (d *PostgresDriver) InsertVersion(ctx context.Context, version int) error {
 	query := fmt.Sprintf(`INSERT INTO %s.%s (version) VALUES ($1)`, d.schema, d.table)
 
-	res, err := d.tx.ExecContext(ctx, query, version)
+	res, err := d.tx.Exec(ctx, query, version)
 	if err != nil {
 		return fmt.Errorf("failed to insert version: %w", err)
 	}
 
-	ra, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected by insert version: %w", err)
-	}
-
-	if ra == 0 {
+	if res.RowsAffected() == 0 {
 		return errors.New("expected new version row to be inserted, but no rows affected")
 	}
 
@@ -124,10 +134,10 @@ func (d *Driver) InsertVersion(ctx context.Context, version int) error {
 }
 
 // Versions ...
-func (d *Driver) Versions(ctx context.Context) ([]int, error) {
+func (d *PostgresDriver) Versions(ctx context.Context) ([]int, error) {
 	query := fmt.Sprintf(`SELECT version FROM %s.%s`, d.schema, d.table)
 
-	rows, err := d.tx.QueryContext(ctx, query)
+	rows, err := d.tx.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query current versions: %w", err)
 	}
@@ -150,12 +160,12 @@ func (d *Driver) Versions(ctx context.Context) ([]int, error) {
 }
 
 // VersionTableExists ...
-func (d *Driver) VersionTableExists(ctx context.Context) (bool, error) {
+func (d *PostgresDriver) VersionTableExists(ctx context.Context) (bool, error) {
 	var name sql.NullString
 
-	query := fmt.Sprintf(`SELECT to_regclass('%s.%s')`, d.schema, d.table)
+	query := fmt.Sprintf(`SELECT to_regclass('%s.%s')::text`, d.schema, d.table)
 
-	err := d.conn.QueryRowContext(ctx, query).Scan(&name)
+	err := d.conn.QueryRow(ctx, query).Scan(&name)
 	if err != nil {
 		return false, err
 	}
