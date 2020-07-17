@@ -131,6 +131,12 @@ func Execute(driver Driver, events EventHandler, namespace string, timeout time.
 			continue
 		}
 
+		if len(migration.Commands) == 0 {
+			// Skip empty migrations
+			events.OnVersionSkipped(version)
+			continue
+		}
+
 		events.BeforeVersionMigrate(version)
 
 		for i, command := range migration.Commands {
