@@ -56,6 +56,10 @@ func Register(namespace string, migration Migration) {
 
 // RegisterFS takes a filesystem and attempts to find SQL files to register as migrations.
 func RegisterFS(namespace string, in fs.FS) error {
+	if _, ok := namespacedMigrations[namespace]; !ok {
+		namespacedMigrations[namespace] = make(Migrations)
+	}
+
 	return fs.WalkDir(in, ".", func(path string, d fs.DirEntry, err error) error {
 		if d.IsDir() {
 			return nil
