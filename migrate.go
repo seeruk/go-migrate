@@ -4,7 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"io/ioutil"
+	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -47,6 +52,53 @@ func Register(namespace string, migration Migration) {
 	}
 
 	namespacedMigrations[namespace][migration.Version] = migration
+}
+
+// RegisterFS takes a filesystem and attempts to find SQL files to register as migrations.
+func RegisterFS(namespace string, in fs.FS) error {
+	return fs.WalkDir(in, ".", func(path string, d fs.DirEntry, err error) error {
+		if d.IsDir() {
+			return nil
+		}
+
+		// We only accept .sql files
+		ext := filepath.Ext(path)
+		if strings.ToLower(ext) != ".sql" {
+			return nil
+		}
+
+		// Get the version name, it must be an int
+		name := strings.TrimSuffix(filepath.Base(path), ext)
+		version, err := strconv.Atoi(name)
+		if err != nil {
+			return fmt.Errorf("failed to parse filename as int: %w", err)
+		}
+
+		// Finally, let's read the contents...
+		file, err := in.Open(path)
+		if err != nil {
+			return fmt.Errorf("failed to open file: %w", err)
+		}
+
+		bs, err := ioutil.ReadAll(file)
+		if err != nil {
+			return fmt.Errorf("failed to read file: %w", err)
+		}
+
+		namespacedMigrations[namespace][version] = Migration{
+			Version:  version,
+			Commands: []string{string(bs)},
+		}
+
+		return err
+	})
+}
+
+// MustRegisterFS calls RegisterFS, but panics if an error is returned.
+func MustRegisterFS(namespace string, in fs.FS) {
+	if err := RegisterFS(namespace, in); err != nil {
+		panic(err)
+	}
 }
 
 // Execute ...

@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"embed"
 	"log"
 	"time"
 
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/seeruk/go-migrate"
 )
+
+//go:embed embedded
+var embedded embed.FS
 
 func main() {
 	conn, err := pgxpool.Connect(context.TODO(), "user=postgres password=postgres sslmode=disable")
@@ -41,6 +45,8 @@ func init() {
 		ALTER TABLE example 
 		ADD COLUMN created_at timestamp NOT NULL DEFAULT current_timestamp
 	`))
+
+	migrate.MustRegisterFS("example", embedded)
 }
 
 // EventHandler ...
